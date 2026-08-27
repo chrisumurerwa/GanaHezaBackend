@@ -113,8 +113,24 @@ router.post(
         description, location,
       } = req.body;
 
-      // Auto-generate code if not provided
-      const autoCode = code?.trim() || `16F${Date.now()}.${new Date().getFullYear()}`;
+      // Auto-generate code in format 16FXXX.YYYY (sequential, e.g. 16F016.2026)
+      let autoCode = code?.trim();
+      if (!autoCode) {
+        // Find the highest existing sequential code and increment
+        const lastCode = await pool.query(
+          `SELECT code FROM products
+           WHERE code ~ '^16F[0-9]+\\.${new Date().getFullYear()}$'
+           ORDER BY CAST(SUBSTRING(code FROM '16F([0-9]+)\\.') AS INTEGER) DESC
+           LIMIT 1`
+        );
+        const year = new Date().getFullYear();
+        if (lastCode.rows.length > 0) {
+          const lastNum = parseInt(lastCode.rows[0].code.replace(`16F`, '').split('.')[0], 10);
+          autoCode = `16F${String(lastNum + 1).padStart(3, '0')}.${year}`;
+        } else {
+          autoCode = `16F001.${year}`;
+        }
+      }
 
       const result = await pool.query(
         `INSERT INTO products
