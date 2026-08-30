@@ -62,7 +62,10 @@ app.listen(PORT, () => {
   console.log(`   GET    /api/products`);
   console.log(`   GET    /api/blog`);
   console.log(`   POST   /api/orders`);
-  console.log(`   POST   /api/contact\n`);
+  console.log(`   POST   /api/contact`);
+  console.log(`   POST   /api/auth/forgot-password`);
+  console.log(`   POST   /api/auth/reset-password`);
+  console.log(`   POST   /api/auth/change-password\n`);
 });
 
 module.exports = app;

@@ -90,8 +90,140 @@ router.post(
   }
 );
 
-// ─── GET /api/auth/me ─────────────────────────────────────────────────────────
+// ─── POST /api/auth/forgot-password ───────────────────────────────────────────
+// Generates a short-lived reset JWT. Since there's no email service yet,
+// the reset token is returned directly in the response.
+// In production, replace this with an email-sent link containing the token.
+router.post(
+  '/forgot-password',
+  [body('email').isEmail().withMessage('Valid email required.')],
+  async (req, res, next) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    try {
+      const { email } = req.body;
+      const result = await pool.query(
+        'SELECT id, email, name FROM users WHERE email = $1',
+        [email.trim().toLowerCase()]
+      );
+      const user = result.rows[0];
+
+      // Security: always return the same message whether or not the email exists.
+      // Only issue a token if the user actually exists.
+      if (!user) {
+        return res.json({
+          message: 'If that email exists, a reset token has been generated.',
+        });
+      }
+
+      const resetToken = jwt.sign(
+        { id: user.id, email: user.email, purpose: 'password_reset' },
+        process.env.JWT_SECRET || 'ganaheza_secret',
+        { expiresIn: '15m' }
+      );
+
+      res.json({
+        message: 'Reset token generated. Use it to set a new password.',
+        resetToken,
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// ─── POST /api/auth/reset-password ────────────────────────────────────────────
+// Validates the reset JWT and sets a new password.
+router.post(
+  '/reset-password',
+  [
+    body('resetToken').notEmpty().withMessage('Reset token required.'),
+    body('newPassword').isLength({ min: 6 }).withMessage('Password must be at least 6 characters.'),
+  ],
+  async (req, res, next) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    try {
+      const { resetToken, newPassword } = req.body;
+
+      let decoded;
+      try {
+        decoded = jwt.verify(resetToken, process.env.JWT_SECRET || 'ganaheza_secret');
+      } catch {
+        return res.status(401).json({ error: 'Invalid or expired reset token.' });
+      }
+
+      if (decoded.purpose !== 'password_reset') {
+        return res.status(401).json({ error: 'Invalid reset token.' });
+      }
+
+      const hash = await bcrypt.hash(newPassword, 10);
+      await pool.query(
+        'UPDATE users SET password_hash = $1 WHERE id = $2',
+        [hash, decoded.id]
+      );
+
+      res.json({ message: 'Password reset successfully. You can now log in with your new password.' });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// ─── POST /api/auth/change-password ───────────────────────────────────────────
+// Requires auth — lets a logged-in admin change their password.
 const { requireAuth } = require('../middleware/auth');
+router.post(
+  '/change-password',
+  requireAuth,
+  [
+    body('currentPassword').notEmpty().withMessage('Current password required.'),
+    body('newPassword').isLength({ min: 6 }).withMessage('New password must be at least 6 characters.'),
+  ],
+  async (req, res, next) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    try {
+      const { currentPassword, newPassword } = req.body;
+
+      const result = await pool.query(
+        'SELECT password_hash FROM users WHERE id = $1',
+        [req.user.id]
+      );
+      const user = result.rows[0];
+
+      if (!user) {
+        return res.status(404).json({ error: 'User not found.' });
+      }
+
+      const match = await bcrypt.compare(currentPassword, user.password_hash);
+      if (!match) {
+        return res.status(401).json({ error: 'Current password is incorrect.' });
+      }
+
+      const hash = await bcrypt.hash(newPassword, 10);
+      await pool.query(
+        'UPDATE users SET password_hash = $1 WHERE id = $2',
+        [hash, req.user.id]
+      );
+
+      res.json({ message: 'Password changed successfully.' });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// ─── GET /api/auth/me ─────────────────────────────────────────────────────────
 router.get('/me', requireAuth, async (req, res, next) => {
   try {
     const result = await pool.query(
