@@ -1,10 +1,16 @@
-const express = require('express');
+﻿const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { body, validationResult } = require('express-validator');
 const pool = require('../db');
+const { sendOtpEmail } = require('../services/email');
 
 const router = express.Router();
+
+// ─── Helper: generate 6-digit OTP ────────────────────────────────────────────
+function generateOtp() {
+  return String(Math.floor(100000 + Math.random() * 900000));
+}
 
 // ─── POST /api/auth/login ─────────────────────────────────────────────────────
 router.post(
@@ -91,9 +97,7 @@ router.post(
 );
 
 // ─── POST /api/auth/forgot-password ───────────────────────────────────────────
-// Generates a short-lived reset JWT. Since there's no email service yet,
-// the reset token is returned directly in the response.
-// In production, replace this with an email-sent link containing the token.
+// Sends a 6-digit OTP to the user's email. OTP expires in 10 minutes.
 router.post(
   '/forgot-password',
   [body('email').isEmail().withMessage('Valid email required.')],
@@ -111,24 +115,32 @@ router.post(
       );
       const user = result.rows[0];
 
-      // Security: always return the same message whether or not the email exists.
-      // Only issue a token if the user actually exists.
+      // Always return success to prevent email enumeration
       if (!user) {
-        return res.json({
-          message: 'If that email exists, a reset token has been generated.',
-        });
+        return res.json({ message: 'If that email is registered, an OTP has been sent.' });
       }
 
-      const resetToken = jwt.sign(
-        { id: user.id, email: user.email, purpose: 'password_reset' },
-        process.env.JWT_SECRET || 'ganaheza_secret',
-        { expiresIn: '15m' }
+      // Generate OTP
+      const otp = generateOtp();
+      const otpHash = await bcrypt.hash(otp, 10);
+      const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+
+      // Invalidate any previous unused OTPs for this user
+      await pool.query(
+        'UPDATE password_reset_otps SET used = TRUE WHERE user_id = $1 AND used = FALSE',
+        [user.id]
       );
 
-      res.json({
-        message: 'Reset token generated. Use it to set a new password.',
-        resetToken,
-      });
+      // Store new OTP
+      await pool.query(
+        'INSERT INTO password_reset_otps (user_id, otp_hash, expires_at) VALUES ($1, $2, $3)',
+        [user.id, otpHash, expiresAt]
+      );
+
+      // Send OTP email
+      await sendOtpEmail(user.email, user.name, otp);
+
+      res.json({ message: 'A 6-digit reset code has been sent to your email.' });
     } catch (err) {
       next(err);
     }
@@ -136,11 +148,12 @@ router.post(
 );
 
 // ─── POST /api/auth/reset-password ────────────────────────────────────────────
-// Validates the reset JWT and sets a new password.
+// Validates OTP and sets a new password.
 router.post(
   '/reset-password',
   [
-    body('resetToken').notEmpty().withMessage('Reset token required.'),
+    body('email').isEmail().withMessage('Valid email required.'),
+    body('otp').isLength({ min: 6, max: 6 }).withMessage('OTP must be 6 digits.'),
     body('newPassword').isLength({ min: 6 }).withMessage('Password must be at least 6 characters.'),
   ],
   async (req, res, next) => {
@@ -150,26 +163,51 @@ router.post(
     }
 
     try {
-      const { resetToken, newPassword } = req.body;
+      const { email, otp, newPassword } = req.body;
 
-      let decoded;
-      try {
-        decoded = jwt.verify(resetToken, process.env.JWT_SECRET || 'ganaheza_secret');
-      } catch {
-        return res.status(401).json({ error: 'Invalid or expired reset token.' });
+      // Get user
+      const userResult = await pool.query(
+        'SELECT id FROM users WHERE email = $1',
+        [email.trim().toLowerCase()]
+      );
+      const user = userResult.rows[0];
+      if (!user) {
+        return res.status(400).json({ error: 'Invalid code or email.' });
       }
 
-      if (decoded.purpose !== 'password_reset') {
-        return res.status(401).json({ error: 'Invalid reset token.' });
+      // Get latest valid OTP
+      const otpResult = await pool.query(
+        `SELECT id, otp_hash FROM password_reset_otps
+         WHERE user_id = $1 AND used = FALSE AND expires_at > NOW()
+         ORDER BY created_at DESC LIMIT 1`,
+        [user.id]
+      );
+      const otpRecord = otpResult.rows[0];
+
+      if (!otpRecord) {
+        return res.status(400).json({ error: 'OTP has expired or already been used. Please request a new one.' });
       }
 
+      // Verify OTP
+      const match = await bcrypt.compare(otp, otpRecord.otp_hash);
+      if (!match) {
+        return res.status(400).json({ error: 'Invalid reset code. Please check and try again.' });
+      }
+
+      // Mark OTP as used
+      await pool.query(
+        'UPDATE password_reset_otps SET used = TRUE WHERE id = $1',
+        [otpRecord.id]
+      );
+
+      // Update password
       const hash = await bcrypt.hash(newPassword, 10);
       await pool.query(
         'UPDATE users SET password_hash = $1 WHERE id = $2',
-        [hash, decoded.id]
+        [hash, user.id]
       );
 
-      res.json({ message: 'Password reset successfully. You can now log in with your new password.' });
+      res.json({ message: 'Password reset successfully. You can now log in.' });
     } catch (err) {
       next(err);
     }
