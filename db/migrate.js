@@ -127,7 +127,7 @@ async function migrate() {
   console.log('✅ Table: password_reset_otps');
 
   // ── Seed Users ─────────────────────────────────────────────────────────────
-  const adminEmail = 'ganaheza16@gmail.com';
+  const adminEmail = 'hertilan.tk@gmail.com';
   const existingAdmin = await pool.query(
     'SELECT id FROM users WHERE email = $1', [adminEmail]
   );
