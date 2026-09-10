@@ -127,7 +127,7 @@ async function migrate() {
   console.log('✅ Table: password_reset_otps');
 
   // ── Seed Users ─────────────────────────────────────────────────────────────
-  const adminEmail = 'admin@ganaheza.com';
+  const adminEmail = 'ganaheza16@gmail.com';
   const existingAdmin = await pool.query(
     'SELECT id FROM users WHERE email = $1', [adminEmail]
   );
@@ -138,7 +138,7 @@ async function migrate() {
        VALUES ($1, $2, $3, $4)`,
       [adminEmail, hash, 'GanaHeza Admin', 'admin']
     );
-    console.log('✅ Seeded: admin user (admin@ganaheza.com / ganaheza2026)');
+    console.log('✅ Seeded: admin user (ganaheza16@gmail.com / ganaheza2026)');
   } else {
     console.log('ℹ️  Admin user already seeded.');
   }
