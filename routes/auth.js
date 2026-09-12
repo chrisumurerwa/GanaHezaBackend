@@ -137,13 +137,15 @@ router.post(
         [user.id, otpHash, expiresAt]
       );
 
-      // Send OTP email in background — don't await so response is immediate
-      res.json({ message: 'A 6-digit reset code has been sent to your email.' });
+      // Send OTP email — wait for it and return error if it fails
+      try {
+        await sendOtpEmail(user.email, user.name, otp);
+      } catch (emailErr) {
+        console.error('[forgot-password] Email send failed:', emailErr.message);
+        return res.status(500).json({ error: 'Failed to send reset code: ' + emailErr.message });
+      }
 
-      // Fire and forget email (non-blocking)
-      sendOtpEmail(user.email, user.name, otp).catch(err => {
-        console.error('[forgot-password] Email send failed:', err.message);
-      });
+      res.json({ message: 'A 6-digit reset code has been sent to your email.' });
     } catch (err) {
       next(err);
     }
